@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Model Comparison Dashboard with Heatmap</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body {
+      background-color: #121212;
+      color: #ffffff;
+      font-family: 'Segoe UI', sans-serif;
+      padding: 20px;
+    }
+    h2 {
+      text-align: center;
+      color: #00ff9f;
+    }
+    select {
+      background-color: #222;
+      color: #fff;
+      padding: 6px 10px;
+      border: 1px solid #444;
+      border-radius: 4px;
+      margin: 0 10px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 20px;
+      background-color: #1e1e1e;
+    }
+    th, td {
+      border: 1px solid #333;
+      padding: 10px;
+      text-align: center;
+      color: #fff;
+    }
+    th {
+      background-color: #2c2c2c;
+      cursor: pointer;
+    }
+    tr:hover {
+      background-color: #2b2b2b;
+    }
+    .highlight {
+      background-color: #1d3f2b !important;
+      color: #00ff9f;
+      font-weight: bold;
+    }
+    .controls {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    svg {
+      margin-top: 40px;
+      display: block;
+      margin-left: auto;
+      margin-right: auto;
+      background-color: #1a1a1a;
+    }
+    .tooltip {
+      position: absolute;
+      background-color: #333;
+      color: white;
+      padding: 8px;
+      border-radius: 4px;
+      font-size: 13px;
+      pointer-events: none;
+      visibility: hidden;
+      z-index: 999;
+    }
+  </style>
+</head>
+<body>
+
+  <h2>📊 Model Comparison Dashboard</h2>
+
+  <div class="controls">
+    <label for="featureSelect">Filter by Feature Set:</label>
+    <select id="featureSelect">
+      <option value="All">All</option>
+    </select>
+  </div>
+
+  <table id="metricsTable">
+    <thead></thead>
+    <tbody></tbody>
+  </table>
+
+  <h2> Heatmap of Metrics</h2>
+  <div id="heatmapContainer"></div>
+  <div class="tooltip" id="tooltip"></div>
+
+<script>
+const tooltip = d3.select("#tooltip");
+
+d3.csv("comparison result.csv").then(function(data) {
+  data = data.filter(d => d["Feature_Set"] !== "All Features");
+
+  const columns = Object.keys(data[0]).filter(col => col !== "Best Threshold");
+  const dropdown = d3.select("#featureSelect");
+  const thead = d3.select("#metricsTable thead");
+  const tbody = d3.select("#metricsTable tbody");
+
+  thead.append("tr")
+    .selectAll("th")
+    .data(columns)
+    .enter()
+    .append("th")
+    .text(d => d);
+
+  const featureSets = Array.from(new Set(data.map(d => d["Feature_Set"])));
+  featureSets.forEach(set => {
+    dropdown.append("option").text(set).attr("value", set);
+  });
+
+  function renderTable(rows, selectedFeatureSet) {
+    tbody.html("");
+
+    if (selectedFeatureSet === "Top 15 RF Features") {
+      const rfRow = rows.find(r => r.Model === "Random Forest");
+      const otherRows = rows.filter(r => r.Model !== "Random Forest")
+        .sort((a,b)=> d3.descending(+a["CV F1-Score"], +b["CV F1-Score"]));
+      rows = [rfRow, ...otherRows];
+    } else {
+      rows.sort((a,b)=> d3.descending(+a["CV F1-Score"], +b["CV F1-Score"]));
+    }
+
+    rows.forEach((row, idx) => {
+      const tr = tbody.append("tr");
+      columns.forEach(col => {
+        let value = row[col];
+        if (!isNaN(parseFloat(value))) {
+          value = (+value).toFixed(2);
+        }
+        tr.append("td").text(value);
+      });
+    });
+
+    tbody.select("tr").classed("highlight", true);
+  }
+
+  function renderHeatmap(rows) {
+    d3.select("#heatmapContainer").html("");
+
+    const margin = { top: 50, right: 30, bottom: 60, left: 150 },
+          width = 1000 - margin.left - margin.right,
+          height = 500 - margin.top - margin.bottom;
+
+    const svg = d3.select("#heatmapContainer")
+      .append("svg")
+      .attr("width", width + margin.left + margin.right)
+      .attr("height", height + margin.top + margin.bottom)
+      .append("g")
+      .attr("transform", `translate(${margin.left},${margin.top})`);
+
+    const metrics = columns.filter(k =>
+      k !== "Feature_Set" && k !== "Model" && k !== "CV F1-Score"
+    );
+
+    const models = [
+      "Logistic Regression",
+      "Decision Tree",
+      "Random Forest",
+      "XGBoost",
+      "Gradient Boosting"
+    ];
+
+    const x = d3.scaleBand().domain(metrics).range([0, width]).padding(0.05);
+    const y = d3.scaleBand().domain(models).range([0, height]).padding(0.05);
+    const color = d3.scaleSequential(d3.interpolateViridis).domain([0, 1]);
+
+    svg.append("g")
+      .call(d3.axisTop(x))
+      .selectAll("text")
+      .style("fill", "#fff")
+      .style("font-size", "12px");
+
+    svg.append("g")
+      .call(d3.axisLeft(y))
+      .selectAll("text")
+      .style("fill", "#fff")
+      .style("font-size", "12px");
+
+    const cells = svg.selectAll()
+      .data(rows.flatMap(d =>
+        metrics.map(m => ({
+          feature: d.Feature_Set,
+          model: d.Model,
+          metric: m,
+          value: +d[m]
+        }))
+      ))
+      .enter()
+      .append("g");
+
+    cells.append("rect")
+      .attr("x", d => x(d.metric))
+      .attr("y", d => y(d.model))
+      .attr("width", x.bandwidth())
+      .attr("height", y.bandwidth())
+      .style("fill", d => color(d.value))
+      .style("stroke", "#333")
+      .on("mouseover", function(event, d) {
+        tooltip.style("visibility", "visible")
+          .html(`<b>${d.model}</b><br>${d.metric}: ${(d.value*100).toFixed(1)}%<br>Feature Set: ${d.feature}`);
+      })
+      .on("mousemove", function(event) {
+        tooltip
+          .style("top", (event.pageY - 40) + "px")
+          .style("left", (event.pageX + 15) + "px");
+      })
+      .on("mouseout", function() {
+        tooltip.style("visibility", "hidden");
+      });
+
+    cells.append("text")
+      .attr("x", d => x(d.metric) + x.bandwidth() / 2)
+      .attr("y", d => y(d.model) + y.bandwidth() / 2)
+      .text(d => `${(d.value*100).toFixed(0)}%`)
+      .style("fill", "#fff")
+      .style("font-size", "10px")
+      .style("text-anchor", "middle")
+      .style("dominant-baseline", "central");
+  }
+
+  dropdown.on("change", function () {
+    const selected = this.value;
+    let currentData;
+    if (selected === "All") {
+      currentData = data.filter(d =>
+        d["Feature_Set"] === "Top 15 RF Features" || d["Feature_Set"] === "Top 15 DT Features"
+      );
+      renderTable(currentData, selected);
+      d3.select("#heatmapContainer").html(""); // clear heatmap when All
+    } else {
+      currentData = data.filter(d => d["Feature_Set"] === selected);
+      renderTable(currentData, selected);
+      renderHeatmap(currentData);
+    }
+  });
+
+  // default view
+  let currentData = data.filter(d =>
+    d["Feature_Set"] === "Top 15 RF Features" || d["Feature_Set"] === "Top 15 DT Features"
+  );
+  renderTable(currentData, "All");
+  d3.select("#heatmapContainer").html(""); // hide heatmap by default on All
+});
+</script>
+</body>
+</html>
